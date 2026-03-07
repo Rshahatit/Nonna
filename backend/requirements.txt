@@ -1,0 +1,31 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.19
+websockets==14.1
+
+# Google Cloud
+google-cloud-firestore==2.19.0
+google-cloud-storage==2.19.0
+google-cloud-texttospeech==2.22.0
+google-cloud-tasks==2.16.0
+google-auth==2.37.0
+
+# Gemini AI
+google-genai==1.5.0
+
+# Vertex AI (Imagen)
+google-cloud-aiplatform==1.75.0
+
+# Twilio
+twilio==9.4.0
+
+# Utilities
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+httpx==0.28.1
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
