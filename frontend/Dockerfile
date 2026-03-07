@@ -9,6 +9,11 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Ensure public directory exists for the COPY in runner stage
+RUN mkdir -p public
+# Provide default env vars for build (overridden at runtime)
+ENV NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+ENV NEXT_PUBLIC_APP_URL=http://localhost:3000
 RUN npm run build
 
 FROM base AS runner
