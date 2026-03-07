@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     cloud_tasks_queue: str = "nonna-reel-pipeline"
     cloud_tasks_location: str = "us-central1"
 
+    # Firebase Auth (Phase 2)
+    firebase_project_id: str = ""
+
+    # SendGrid (Phase 2 — email notifications)
+    sendgrid_api_key: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

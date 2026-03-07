@@ -112,10 +112,25 @@ async def pwa_stream(websocket: WebSocket):
 
 
 async def _post_session_pipeline(session_id: str, elder_id: str, transcript: str):
-    """Run memory extraction and reel generation after session ends."""
+    """Run memory extraction, tagging, threading, and reel generation."""
     try:
         await extract_and_update_memory(session_id, elder_id, transcript)
         await trigger_reel_pipeline(session_id, elder_id)
+
+        # Phase 2: auto-tagging and thread generation
+        try:
+            from app.services.tagging import tag_session_moments, generate_threads
+            await tag_session_moments(session_id)
+            from app.services.firestore import get_db
+            db = get_db()
+            elder_doc = await db.collection("elders").document(elder_id).get()
+            if elder_doc.exists:
+                family_id = elder_doc.to_dict().get("familyId")
+                if family_id:
+                    await generate_threads(family_id, elder_id)
+        except Exception as e:
+            logger.warning(f"Tagging/threading failed (non-fatal): {e}")
+
     except Exception as e:
         logger.error(f"Post-session pipeline failed: session={session_id}, error={e}")
         await firestore.update_session_status(session_id, status="failed")

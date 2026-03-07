@@ -20,6 +20,15 @@ google-cloud-aiplatform==1.75.0
 # Twilio
 twilio==9.4.0
 
+# Firebase Auth (Phase 2)
+firebase-admin==6.6.0
+
+# Email notifications (Phase 2)
+sendgrid==6.11.0
+
+# PDF generation (Phase 2 — keepsake books)
+weasyprint==62.3
+
 # Utilities
 pydantic==2.10.4
 pydantic-settings==2.7.1

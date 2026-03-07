@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { Providers } from "./providers";
 
 export const metadata: Metadata = {
   title: "Nonna — Preserve Your Family's Stories",
@@ -22,7 +23,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-nonna-cream text-nonna-dark min-h-screen">
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

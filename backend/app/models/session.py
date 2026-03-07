@@ -33,6 +33,10 @@ class MomentResponse(BaseModel):
     emotional_tone: str
     image_url: str = ""
     order: int = 0
+    # Phase 2 fields
+    tags: list[str] = Field(default_factory=list)
+    people_mentioned: list[str] = Field(default_factory=list)
+    place_mentioned: Optional[str] = None
 
 
 class ReelResponse(BaseModel):

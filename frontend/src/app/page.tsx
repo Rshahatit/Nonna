@@ -1,8 +1,48 @@
+"use client";
+
 import Link from "next/link";
+import { useAuth } from "@/contexts/AuthContext";
+import { useRouter } from "next/navigation";
 
 export default function Home() {
+  const { user, signIn } = useAuth();
+  const router = useRouter();
+
+  const handleSignIn = async () => {
+    try {
+      await signIn();
+      router.push("/dashboard");
+    } catch {
+      // User cancelled sign-in
+    }
+  };
+
   return (
     <main className="min-h-screen flex flex-col">
+      {/* Nav */}
+      <nav className="flex items-center justify-between px-6 py-4">
+        <span className="text-2xl font-serif font-bold">Nonna</span>
+        <div className="flex items-center gap-4">
+          {user ? (
+            <Link
+              href="/dashboard"
+              className="bg-nonna-accent text-white px-6 py-2 rounded-xl
+                         hover:bg-nonna-brown transition-colors font-semibold"
+            >
+              My Families
+            </Link>
+          ) : (
+            <button
+              onClick={handleSignIn}
+              className="bg-nonna-accent text-white px-6 py-2 rounded-xl
+                         hover:bg-nonna-brown transition-colors font-semibold"
+            >
+              Sign In
+            </button>
+          )}
+        </div>
+      </nav>
+
       {/* Hero */}
       <section className="flex-1 flex flex-col items-center justify-center px-6 py-20 text-center">
         <h1 className="text-5xl md:text-7xl font-serif font-bold text-nonna-dark mb-6">
@@ -16,14 +56,26 @@ export default function Home() {
           listens to their stories, and transforms every conversation into a
           beautiful Memory Reel your family keeps forever.
         </p>
-        <Link
-          href="/setup"
-          className="inline-block bg-nonna-accent text-white text-xl font-semibold
-                     px-10 py-5 rounded-2xl hover:bg-nonna-brown transition-colors
-                     shadow-lg hover:shadow-xl min-h-[60px]"
-        >
-          Set Up Nonna for Your Family
-        </Link>
+        <div className="flex flex-col sm:flex-row gap-4">
+          <Link
+            href="/setup"
+            className="inline-block bg-nonna-accent text-white text-xl font-semibold
+                       px-10 py-5 rounded-2xl hover:bg-nonna-brown transition-colors
+                       shadow-lg hover:shadow-xl min-h-[60px]"
+          >
+            Get Started
+          </Link>
+          {!user && (
+            <button
+              onClick={handleSignIn}
+              className="inline-block border-2 border-nonna-accent text-nonna-accent
+                         text-xl font-semibold px-10 py-5 rounded-2xl
+                         hover:bg-nonna-accent/10 transition-colors min-h-[60px]"
+            >
+              Sign In
+            </button>
+          )}
+        </div>
       </section>
 
       {/* How It Works */}
@@ -51,10 +103,10 @@ export default function Home() {
             </div>
             <div className="text-center">
               <div className="text-4xl mb-4">3</div>
-              <h3 className="text-xl font-bold mb-3">You Get Memory Reels</h3>
+              <h3 className="text-xl font-bold mb-3">Your Family Explores</h3>
               <p className="text-nonna-brown/80">
-                After each conversation, Nonna creates a short narrated video
-                with beautiful illustrations of your parent&apos;s stories.
+                Browse a rich archive of stories, search by topic, curate
+                collections, and order a keepsake book.
               </p>
             </div>
           </div>
@@ -78,12 +130,12 @@ export default function Home() {
                 desc: "They just pick up the phone. No apps, no passwords, no tech skills needed.",
               },
               {
-                title: "Vision-Enabled Conversations",
-                desc: "On a tablet, Nonna can see photos and objects — sparking deeper stories about what she sees.",
+                title: "Rich Family Archive",
+                desc: "Browse stories by timeline, people, themes, or search for any topic. Your family's wisdom, organized beautifully.",
               },
               {
-                title: "Beautiful Memory Reels",
-                desc: "Every conversation becomes a short video with warm illustrations and narration your family keeps forever.",
+                title: "Keepsake Books",
+                desc: "Turn conversations into a printed hardcover book with illustrations and quotes. A gift that lasts generations.",
               },
             ].map((feature) => (
               <div
