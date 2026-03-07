@@ -56,6 +56,17 @@ async def get_current_user(
 
     Returns a dict with uid, email, name, picture from Firebase token claims.
     """
+    settings = get_settings()
+
+    # Local dev bypass: USE_LOCAL_STORAGE=true + Bearer "dev-token" → mock user
+    if settings.use_local_storage and credentials and credentials.credentials == "dev-token":
+        return {
+            "uid": "dev-user-001",
+            "email": "dev@nonna.local",
+            "name": "Dev User",
+            "picture": "",
+        }
+
     if not credentials:
         raise HTTPException(status_code=401, detail="Authentication required")
 

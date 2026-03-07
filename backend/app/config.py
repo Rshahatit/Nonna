@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # SendGrid (Phase 2 — email notifications)
     sendgrid_api_key: str = ""
 
+    # Local development
+    use_local_storage: bool = False
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

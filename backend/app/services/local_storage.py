@@ -19,6 +19,18 @@ _moments: dict[str, list[dict]] = {}  # session_id -> [moment_dicts]
 _reels: dict[str, dict] = {}
 
 
+def get_db():
+    """Stub for code that imports get_db from firestore.
+
+    In local mode, the actual Firestore client is not available.
+    Modules that call get_db() at runtime in local mode will raise.
+    """
+    raise RuntimeError(
+        "get_db() is not available in local storage mode. "
+        "Use the async helper functions instead."
+    )
+
+
 def reset():
     """Clear all in-memory data. Useful between tests."""
     _elders.clear()
