@@ -122,7 +122,7 @@ async def update_elder_memory(elder_id: str, memory: ElderMemory) -> None:
 
 # ──────────────────────────── Sessions ────────────────────────────
 
-async def create_session(elder_id: str, channel: str) -> SessionResponse:
+async def create_session(elder_id: str, channel: str, mode: str = "story") -> SessionResponse:
     db = get_db()
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
@@ -130,6 +130,7 @@ async def create_session(elder_id: str, channel: str) -> SessionResponse:
     doc = {
         "elderId": elder_id,
         "channel": channel,
+        "mode": mode,
         "status": "live",
         "startedAt": now,
         "endedAt": None,
@@ -138,6 +139,8 @@ async def create_session(elder_id: str, channel: str) -> SessionResponse:
         "visionContextUsed": channel == "pwa",
         "topicsCovered": [],
         "newPeopleMentioned": [],
+        "modeTransitions": [],
+        "navigationContext": None,
     }
     await db.collection("sessions").document(session_id).set(doc)
 
@@ -145,6 +148,7 @@ async def create_session(elder_id: str, channel: str) -> SessionResponse:
         id=session_id,
         elder_id=elder_id,
         channel=channel,
+        mode=mode,
         status="live",
         started_at=now,
     )
@@ -160,6 +164,7 @@ async def get_session(session_id: str) -> Optional[SessionResponse]:
         id=doc.id,
         elder_id=d["elderId"],
         channel=d["channel"],
+        mode=d.get("mode", "story"),
         status=d["status"],
         started_at=d["startedAt"],
         ended_at=d.get("endedAt"),

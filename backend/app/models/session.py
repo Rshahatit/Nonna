@@ -4,10 +4,13 @@ from datetime import datetime
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
+from app.models.navigator import SessionMode, ModeTransition, NavigationContext
+
 
 class SessionCreate(BaseModel):
     elder_id: str
     channel: Literal["phone", "pwa"]
+    mode: SessionMode = "story"
 
 
 class SessionResponse(BaseModel):
@@ -15,6 +18,9 @@ class SessionResponse(BaseModel):
     elder_id: str
     channel: Literal["phone", "pwa"]
     status: Literal["live", "processing", "complete", "failed"]
+    mode: SessionMode = "story"
+    mode_transitions: list[ModeTransition] = Field(default_factory=list)
+    navigation_context: Optional[NavigationContext] = None
     started_at: datetime
     ended_at: Optional[datetime] = None
     duration: Optional[int] = None

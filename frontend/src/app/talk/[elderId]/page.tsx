@@ -1,35 +1,56 @@
 "use client";
 
+import { useState } from "react";
 import { useParams } from "next/navigation";
 import { useConversation } from "@/hooks/useConversation";
+import type { SessionMode } from "@/hooks/useConversation";
+import ModeSelector from "@/components/ModeSelector";
+import NavigatorOverlay from "@/components/NavigatorOverlay";
 
 export default function TalkPage() {
   const params = useParams();
   const elderId = params.elderId as string;
-  const { state, isSpeaking, start, stop, videoRef } =
-    useConversation(elderId);
+  const [selectedMode, setSelectedMode] = useState<SessionMode>("story");
+  const {
+    state,
+    isSpeaking,
+    mode,
+    encouragement,
+    start,
+    stop,
+    videoRef,
+    captureScreenFromVideo,
+  } = useConversation(elderId);
+
+  const isNavigatorMode = mode === "navigator" || mode === "assist";
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-6 py-12">
-      {/* Idle state — big button */}
+      {/* Idle state — mode selection + start */}
       {state === "idle" && (
         <div className="text-center space-y-8">
           <h1 className="text-elder-lg font-serif font-bold">
             Talk to Nonna
           </h1>
           <p className="text-elder text-nonna-brown/70">
-            Tap the button below to start a conversation.
+            What would you like to do today?
           </p>
+
+          <ModeSelector
+            selectedMode={selectedMode}
+            onSelectMode={setSelectedMode}
+          />
+
           <button
-            onClick={() => start(true)}
-            className="w-64 h-64 rounded-full bg-nonna-accent text-white
+            onClick={() => start(true, selectedMode)}
+            className="w-56 h-56 rounded-full bg-nonna-accent text-white
                        text-3xl font-bold shadow-2xl hover:bg-nonna-brown
                        transition-all hover:scale-105 active:scale-95"
           >
-            Talk to<br />Nonna
+            Start
           </button>
           <button
-            onClick={() => start(false)}
+            onClick={() => start(false, selectedMode)}
             className="block mx-auto text-nonna-brown/60 hover:text-nonna-brown
                        underline text-lg"
           >
@@ -51,14 +72,27 @@ export default function TalkPage() {
       {/* Active conversation */}
       {state === "active" && (
         <div className="text-center space-y-8 w-full max-w-lg">
-          {/* Camera preview (small) */}
+          {/* Camera preview */}
           <video
             ref={videoRef}
             autoPlay
             playsInline
             muted
-            className="w-32 h-24 rounded-xl object-cover mx-auto opacity-60"
+            className={`rounded-xl object-cover mx-auto ${
+              isNavigatorMode
+                ? "w-48 h-36 opacity-80"
+                : "w-32 h-24 opacity-60"
+            }`}
           />
+
+          {/* Navigator/Assist overlay */}
+          {isNavigatorMode && (
+            <NavigatorOverlay
+              isCapturing={true}
+              onCaptureScreenshot={captureScreenFromVideo}
+              encouragement={encouragement}
+            />
+          )}
 
           {/* Speaking indicator */}
           <div className="flex items-center justify-center gap-3">
@@ -71,6 +105,14 @@ export default function TalkPage() {
               {isSpeaking ? "Nonna is speaking..." : "Nonna is listening..."}
             </p>
           </div>
+
+          {/* Mode indicator */}
+          <p className="text-sm text-nonna-brown/40">
+            {mode === "story" && "Story Mode"}
+            {mode === "navigator" && "Screen Guide Mode"}
+            {mode === "check_in" && "Check-In Mode"}
+            {mode === "assist" && "Help Mode"}
+          </p>
 
           {/* End button */}
           <button
@@ -88,14 +130,20 @@ export default function TalkPage() {
       {state === "ended" && (
         <div className="text-center space-y-8">
           <h2 className="text-elder-lg font-serif font-bold">
-            Thank you for sharing today.
+            {mode === "story"
+              ? "Thank you for sharing today."
+              : "Great job today!"}
           </h2>
           <p className="text-elder text-nonna-brown/70">
-            Your Memory Reel will be ready soon.
+            {mode === "story"
+              ? "Your Memory Reel will be ready soon."
+              : "Nonna is always here when you need help."}
           </p>
-          <p className="text-lg text-nonna-brown/50">
-            Nonna is turning your stories into something beautiful.
-          </p>
+          {mode === "story" && (
+            <p className="text-lg text-nonna-brown/50">
+              Nonna is turning your stories into something beautiful.
+            </p>
+          )}
           <button
             onClick={() => window.location.reload()}
             className="bg-nonna-accent text-white text-xl font-semibold

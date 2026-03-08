@@ -61,16 +61,31 @@ export interface ElderMemory {
   conversation_style: string;
 }
 
+export type SessionMode = "story" | "navigator" | "check_in" | "assist";
+
+export interface NavigationContext {
+  task: string | null;
+  current_app: string | null;
+  current_screen: string | null;
+  steps_completed: string[];
+  steps_remaining: string[];
+  screens_analyzed: number;
+  task_completed: boolean;
+  stuck_count: number;
+}
+
 export interface Session {
   id: string;
   elder_id: string;
   channel: "phone" | "pwa";
+  mode: SessionMode;
   status: "live" | "processing" | "complete" | "failed";
   started_at: string;
   ended_at: string | null;
   duration: number | null;
   topics_covered: string[];
   new_people_mentioned: string[];
+  navigation_context: NavigationContext | null;
 }
 
 export interface Moment {

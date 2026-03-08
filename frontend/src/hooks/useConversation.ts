@@ -7,11 +7,14 @@ const WS_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000")
   .replace("http://", "ws://");
 
 type ConversationState = "idle" | "connecting" | "active" | "ended";
+export type SessionMode = "story" | "navigator" | "check_in" | "assist";
 
 export function useConversation(elderId: string) {
   const [state, setState] = useState<ConversationState>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [mode, setMode] = useState<SessionMode>("story");
+  const [encouragement, setEncouragement] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -19,17 +22,68 @@ export function useConversation(elderId: string) {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const screenshotIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const sendScreenshot = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    // Capture the current page as a screenshot using canvas
+    const target = document.documentElement;
+    const canvas = document.createElement("canvas");
+    const width = Math.min(target.scrollWidth, 1280);
+    const height = Math.min(target.scrollHeight, 960);
+    canvas.width = width;
+    canvas.height = height;
+
+    // Use html2canvas-like approach: capture visible viewport
+    // For MVP, we send a simple viewport capture message
+    // In production, this would use getDisplayMedia or html2canvas
+    try {
+      // Try getDisplayMedia for full screen capture (requires user gesture first time)
+      // For now, send a capture request that the backend can use
+      ws.send(
+        JSON.stringify({
+          type: "screenshot",
+          data: "", // placeholder — real impl would use getDisplayMedia
+          timestamp: Date.now(),
+        })
+      );
+    } catch {
+      console.warn("Screenshot capture not available");
+    }
+  }, []);
+
+  const captureScreenFromVideo = useCallback(() => {
+    // Capture from camera pointed at another screen (fallback for iOS)
+    const video = videoRef.current;
+    const ws = wsRef.current;
+    if (!video || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.drawImage(video, 0, 0, 640, 480);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+      const base64 = dataUrl.split(",")[1];
+      ws.send(JSON.stringify({ type: "screenshot", data: base64 }));
+    }
+  }, []);
 
   const start = useCallback(
-    async (enableCamera: boolean = false) => {
+    async (enableCamera: boolean = false, sessionMode: SessionMode = "story") => {
       setState("connecting");
+      setMode(sessionMode);
 
       try {
         // Get microphone (and optionally camera)
         const constraints: MediaStreamConstraints = {
           audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true },
         };
-        if (enableCamera) {
+        // Enable camera for story mode with camera, or for navigator/assist (to see other screens)
+        if (enableCamera || sessionMode === "navigator" || sessionMode === "assist") {
           constraints.video = { facingMode: "environment", width: 640, height: 480 };
         }
 
@@ -49,7 +103,13 @@ export function useConversation(elderId: string) {
         wsRef.current = ws;
 
         ws.onopen = () => {
-          ws.send(JSON.stringify({ type: "start", elder_id: elderId }));
+          ws.send(
+            JSON.stringify({
+              type: "start",
+              elder_id: elderId,
+              mode: sessionMode,
+            })
+          );
         };
 
         ws.onmessage = (event) => {
@@ -75,13 +135,45 @@ export function useConversation(elderId: string) {
             source.connect(processor);
             processor.connect(audioContext.destination);
 
-            // Start sending camera frames if enabled
-            if (enableCamera && videoRef.current) {
+            // Start sending camera frames for story mode
+            if (
+              (enableCamera || sessionMode === "story") &&
+              stream.getVideoTracks().length > 0 &&
+              videoRef.current
+            ) {
               const video = videoRef.current;
               video.srcObject = stream;
               video.play();
 
-              frameIntervalRef.current = setInterval(() => {
+              if (sessionMode === "story") {
+                // Story mode: send camera frames every 10s
+                frameIntervalRef.current = setInterval(() => {
+                  if (ws.readyState !== WebSocket.OPEN) return;
+                  const canvas = document.createElement("canvas");
+                  canvas.width = 640;
+                  canvas.height = 480;
+                  const ctx = canvas.getContext("2d");
+                  if (ctx) {
+                    ctx.drawImage(video, 0, 0, 640, 480);
+                    const dataUrl = canvas.toDataURL("image/jpeg", 0.5);
+                    const base64 = dataUrl.split(",")[1];
+                    ws.send(JSON.stringify({ type: "frame", data: base64 }));
+                  }
+                }, 10000);
+              }
+            }
+
+            // Navigator/assist: auto-capture screenshots from camera every 5s
+            if (
+              (sessionMode === "navigator" || sessionMode === "assist") &&
+              stream.getVideoTracks().length > 0 &&
+              videoRef.current
+            ) {
+              const video = videoRef.current;
+              video.srcObject = stream;
+              video.play();
+
+              screenshotIntervalRef.current = setInterval(() => {
                 if (ws.readyState !== WebSocket.OPEN) return;
                 const canvas = document.createElement("canvas");
                 canvas.width = 640;
@@ -89,11 +181,11 @@ export function useConversation(elderId: string) {
                 const ctx = canvas.getContext("2d");
                 if (ctx) {
                   ctx.drawImage(video, 0, 0, 640, 480);
-                  const dataUrl = canvas.toDataURL("image/jpeg", 0.5);
+                  const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
                   const base64 = dataUrl.split(",")[1];
-                  ws.send(JSON.stringify({ type: "frame", data: base64 }));
+                  ws.send(JSON.stringify({ type: "screenshot", data: base64 }));
                 }
-              }, 10000); // Every 10 seconds
+              }, 5000);
             }
           } else if (message.type === "audio") {
             // Play Nonna's audio response
@@ -104,13 +196,20 @@ export function useConversation(elderId: string) {
             for (let i = 0; i < audioData.length; i++) {
               view[i] = audioData.charCodeAt(i);
             }
-            audioContext.decodeAudioData(arrayBuffer).then((buffer) => {
-              const source = audioContext.createBufferSource();
-              source.buffer = buffer;
-              source.connect(audioContext.destination);
-              source.onended = () => setIsSpeaking(false);
-              source.start();
-            }).catch(() => setIsSpeaking(false));
+            audioContext
+              .decodeAudioData(arrayBuffer)
+              .then((buffer) => {
+                const src = audioContext.createBufferSource();
+                src.buffer = buffer;
+                src.connect(audioContext.destination);
+                src.onended = () => setIsSpeaking(false);
+                src.start();
+              })
+              .catch(() => setIsSpeaking(false));
+          } else if (message.type === "nav_encouragement") {
+            setEncouragement(message.message);
+            // Clear after 5 seconds
+            setTimeout(() => setEncouragement(null), 5000);
           } else if (message.type === "error") {
             console.error("Server error:", message.message);
           }
@@ -141,6 +240,9 @@ export function useConversation(elderId: string) {
     if (frameIntervalRef.current) {
       clearInterval(frameIntervalRef.current);
     }
+    if (screenshotIntervalRef.current) {
+      clearInterval(screenshotIntervalRef.current);
+    }
     if (processorRef.current) {
       processorRef.current.disconnect();
     }
@@ -157,11 +259,25 @@ export function useConversation(elderId: string) {
   useEffect(() => {
     return () => {
       if (wsRef.current) wsRef.current.close();
-      if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      if (mediaStreamRef.current)
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       if (audioContextRef.current) audioContextRef.current.close();
       if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
+      if (screenshotIntervalRef.current)
+        clearInterval(screenshotIntervalRef.current);
     };
   }, []);
 
-  return { state, sessionId, isSpeaking, start, stop, videoRef };
+  return {
+    state,
+    sessionId,
+    isSpeaking,
+    mode,
+    encouragement,
+    start,
+    stop,
+    videoRef,
+    sendScreenshot,
+    captureScreenFromVideo,
+  };
 }
