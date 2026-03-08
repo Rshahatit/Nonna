@@ -44,6 +44,8 @@ export default function FamilyArchivePage() {
   const [showFilters, setShowFilters] = useState(false);
   const [loading, setLoading] = useState(true);
   const [familyName, setFamilyName] = useState("");
+  const [addToCollectionMoment, setAddToCollectionMoment] = useState<{ sessionId: string; momentId: string } | null>(null);
+  const [collectionToast, setCollectionToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -122,6 +124,31 @@ export default function FamilyArchivePage() {
     const timer = setTimeout(handleSearch, 300);
     return () => clearTimeout(timer);
   }, [handleSearch]);
+
+  const handleAddToCollection = async (collectionId: string) => {
+    if (!addToCollectionMoment) return;
+    try {
+      await api.addMomentToCollection(familyId, collectionId, {
+        session_id: addToCollectionMoment.sessionId,
+        moment_id: addToCollectionMoment.momentId,
+      });
+      const coll = collections.find((c) => c.id === collectionId);
+      setCollectionToast(`Added to "${coll?.name}"`);
+      // Update local collection state
+      setCollections((prev) =>
+        prev.map((c) =>
+          c.id === collectionId
+            ? { ...c, moment_refs: [...c.moment_refs, { session_id: addToCollectionMoment.sessionId, moment_id: addToCollectionMoment.momentId }] }
+            : c
+        )
+      );
+      setTimeout(() => setCollectionToast(null), 3000);
+    } catch {
+      setCollectionToast("Failed to add moment");
+      setTimeout(() => setCollectionToast(null), 3000);
+    }
+    setAddToCollectionMoment(null);
+  };
 
   // Derived data
   const personThreads = threads.filter((t) => t.type === "person");
@@ -598,7 +625,7 @@ export default function FamilyArchivePage() {
                             &ldquo;{moment.quote}&rdquo;
                           </blockquote>
                         )}
-                        <div className="flex flex-wrap gap-1 mt-2">
+                        <div className="flex flex-wrap gap-1 mt-2 items-center">
                           <span className="text-xs bg-nonna-warm/50 text-nonna-brown/60 px-2 py-1 rounded-full capitalize">
                             {moment.emotional_tone}
                           </span>
@@ -612,7 +639,40 @@ export default function FamilyArchivePage() {
                               {p}
                             </span>
                           ))}
+                          {collections.length > 0 && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAddToCollectionMoment(
+                                  addToCollectionMoment?.momentId === moment.id
+                                    ? null
+                                    : { sessionId: selected!.id, momentId: moment.id }
+                                );
+                              }}
+                              className="ml-auto text-xs text-nonna-accent hover:underline flex items-center gap-1"
+                            >
+                              + Collection
+                            </button>
+                          )}
                         </div>
+                        {/* Collection picker dropdown */}
+                        {addToCollectionMoment?.momentId === moment.id && (
+                          <div className="mt-2 bg-nonna-warm/20 rounded-lg p-3 space-y-1">
+                            <p className="text-xs font-semibold text-nonna-brown/60 mb-1">Add to:</p>
+                            {collections.map((coll) => (
+                              <button
+                                key={coll.id}
+                                onClick={(e) => { e.stopPropagation(); handleAddToCollection(coll.id); }}
+                                className="block w-full text-left text-sm px-3 py-2 rounded-lg hover:bg-white transition-colors"
+                              >
+                                {coll.name}
+                                <span className="text-xs text-nonna-brown/40 ml-2">
+                                  ({coll.moment_refs.length} moments)
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -649,6 +709,13 @@ export default function FamilyArchivePage() {
           </div>
         )}
       </div>
+
+      {/* Toast notification */}
+      {collectionToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-nonna-dark text-white px-6 py-3 rounded-xl shadow-lg z-50 animate-fade-in">
+          {collectionToast}
+        </div>
+      )}
     </main>
   );
 }

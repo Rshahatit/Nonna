@@ -86,6 +86,7 @@ export interface Session {
   topics_covered: string[];
   new_people_mentioned: string[];
   navigation_context: NavigationContext | null;
+  vision_context_used: boolean;
 }
 
 export interface Moment {
