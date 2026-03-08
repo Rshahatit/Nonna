@@ -1,17 +1,24 @@
-"""Memory Reel generation pipeline: story extraction → images → narration → video assembly."""
+"""Memory Reel generation pipeline: story extraction + illustration → narration → video assembly.
+
+Primary path: single Gemini interleaved text+image call (extracts moments AND generates illustrations).
+Fallback: separate Gemini text extraction + Imagen 3 image generation.
+"""
 
 import asyncio
 import json
 import logging
+import re
 import subprocess
 import tempfile
 import os
-from pathlib import Path
+from io import BytesIO
 from typing import Optional
 
 from google import genai
 from google.genai import types
+from google.genai.types import Modality
 from google.cloud import texttospeech_v1 as tts
+from PIL import Image
 
 from app.config import get_settings
 from app.services import firestore
@@ -19,7 +26,130 @@ from app.services.storage import upload_image, upload_audio, upload_reel
 
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────── Story Extraction ────────────────────────────
+# ──────────────── Interleaved Story + Image Generation (Primary) ────────────────
+
+INTERLEAVED_PROMPT_TEMPLATE = """You are creating a Memory Reel — a short illustrated story based on a conversation with {elder_name}.
+
+Here is the conversation transcript:
+{transcript}
+{additional_context}
+Create 3-5 story moments from this conversation. For each moment:
+1. Write the moment metadata in EXACTLY this format:
+MOMENT: [short evocative title, 3-7 words]
+SUMMARY: [2-3 sentences in warm third person, e.g. "She remembered..." / "He described..."]
+QUOTE: [the elder's exact words — the most powerful or touching sentence]
+TONE: [one word: nostalgic, joyful, bittersweet, proud, tender, etc.]
+
+2. Then generate a warm, painterly watercolor illustration of the scene described.
+
+Style for ALL illustrations: Warm watercolor illustration in the style of a cherished memory, soft golden lighting, gentle and nostalgic mood, painterly brushstrokes, rich but muted colors. Include rich cultural and environmental details from the story. 16:9 landscape composition.
+
+Order moments by narrative flow. Output each moment's text block followed immediately by its illustration image."""
+
+
+def _build_interleaved_prompt(transcript: str, elder_name: str, vision_context: list[str] = None) -> str:
+    additional_context = ""
+    if vision_context:
+        additional_context = (
+            "\n\nVISUAL CONTEXT FROM CAMERA (use to enrich scene descriptions):\n"
+            + "\n".join(f"- {obs}" for obs in vision_context)
+            + "\n"
+        )
+    return INTERLEAVED_PROMPT_TEMPLATE.format(
+        elder_name=elder_name,
+        transcript=transcript,
+        additional_context=additional_context,
+    )
+
+
+def _parse_moment_text(text: str) -> dict:
+    """Parse a text block with MOMENT/SUMMARY/QUOTE/TONE labels."""
+    result = {}
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if line.upper().startswith("MOMENT:"):
+            result["title"] = line.split(":", 1)[1].strip()
+        elif line.upper().startswith("SUMMARY:"):
+            result["summary"] = line.split(":", 1)[1].strip()
+        elif line.upper().startswith("QUOTE:"):
+            result["quote"] = line.split(":", 1)[1].strip().strip("\"'")
+        elif line.upper().startswith("TONE:"):
+            result["emotional_tone"] = line.split(":", 1)[1].strip()
+    return result if "title" in result else {}
+
+
+def _parse_interleaved_response(response) -> list[dict]:
+    """Parse Gemini interleaved text+image response into structured moments."""
+    moments = []
+    current_moment = {}
+
+    for part in response.candidates[0].content.parts:
+        if hasattr(part, "text") and part.text:
+            parsed = _parse_moment_text(part.text)
+            if parsed:
+                # If we already have a partial moment without an image, save it first
+                if current_moment.get("title") and "image_data" not in current_moment:
+                    moments.append(current_moment)
+                current_moment = parsed
+        elif hasattr(part, "inline_data") and part.inline_data:
+            image = Image.open(BytesIO(part.inline_data.data))
+            # Convert to PNG bytes
+            buf = BytesIO()
+            image.save(buf, format="PNG")
+            current_moment["image_data"] = buf.getvalue()
+
+            if "title" in current_moment:
+                moments.append(current_moment)
+                current_moment = {}
+
+    # Handle trailing moment without image
+    if current_moment.get("title"):
+        moments.append(current_moment)
+
+    return moments
+
+
+async def generate_story_with_illustrations(
+    session_id: str,
+    transcript: str,
+    elder_name: str,
+    vision_context: list[str] = None,
+) -> list[dict]:
+    """Primary path: single Gemini call returning interleaved text + images."""
+    settings = get_settings()
+    client = genai.Client(api_key=settings.gemini_api_key)
+
+    prompt = _build_interleaved_prompt(transcript, elder_name, vision_context)
+
+    logger.info(f"Reel pipeline: using interleaved Gemini generation (model={settings.gemini_image_model})")
+
+    response = await client.aio.models.generate_content(
+        model=settings.gemini_image_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_modalities=[Modality.TEXT, Modality.IMAGE],
+            temperature=0.4,
+        ),
+    )
+
+    moments = _parse_interleaved_response(response)
+
+    if not moments:
+        raise ValueError("Interleaved response produced no parseable moments")
+
+    # Ensure each moment has required fields with defaults
+    for m in moments:
+        m.setdefault("summary", m.get("title", ""))
+        m.setdefault("quote", "")
+        m.setdefault("emotional_tone", "nostalgic")
+        m.setdefault("visual_description", "")  # Not needed for interleaved, but kept for schema
+
+    logger.info(f"Interleaved generation produced {len(moments)} moments "
+                f"({sum(1 for m in moments if 'image_data' in m)} with images)")
+    return moments
+
+
+# ──────────────── Fallback: Separate Extraction + Imagen 3 ────────────────
 
 STORY_EXTRACTION_PROMPT = """You are extracting story moments from a conversation between Nonna (an AI companion) and an elder. These moments will become a Memory Reel — a short narrated video with illustrated scenes.
 
@@ -48,16 +178,26 @@ Respond with valid JSON:
 }
 """
 
+STYLE_PREFIX = (
+    "Warm watercolor illustration in the style of a cherished memory, "
+    "soft golden lighting, gentle and nostalgic mood, painterly brushstrokes, "
+    "rich but muted colors. "
+)
 
-async def extract_story_moments(session_id: str, transcript: str, vision_context: list[str] = None) -> list[dict]:
-    """Extract structured story moments from a session transcript."""
+
+async def _extract_story_moments_text_only(
+    transcript: str, vision_context: list[str] = None
+) -> list[dict]:
+    """Fallback: extract moments as structured JSON (no images)."""
     settings = get_settings()
     client = genai.Client(api_key=settings.gemini_api_key)
 
     additional_context = ""
     if vision_context:
-        additional_context = f"\n\nVISUAL CONTEXT FROM CAMERA (use to enrich scene descriptions):\n" + \
-                           "\n".join(f"- {obs}" for obs in vision_context)
+        additional_context = (
+            "\n\nVISUAL CONTEXT FROM CAMERA (use to enrich scene descriptions):\n"
+            + "\n".join(f"- {obs}" for obs in vision_context)
+        )
 
     response = await client.aio.models.generate_content(
         model=settings.gemini_model,
@@ -73,38 +213,16 @@ async def extract_story_moments(session_id: str, transcript: str, vision_context
 
     try:
         data = json.loads(response.text)
-        moments = data.get("moments", [])
+        return data.get("moments", [])
     except (json.JSONDecodeError, AttributeError) as e:
         logger.error(f"Failed to parse story extraction: {e}")
         return []
 
-    # Save moments to Firestore
-    for i, moment in enumerate(moments):
-        moment["order"] = i
-        await firestore.create_moment(session_id, {
-            "title": moment["title"],
-            "summary": moment["summary"],
-            "quote": moment["quote"],
-            "visual_description": moment["visual_description"],
-            "emotional_tone": moment["emotional_tone"],
-            "image_url": "",
-            "order": i,
-        })
 
-    return moments
-
-
-# ──────────────────────────── Image Generation ────────────────────────────
-
-STYLE_PREFIX = (
-    "Warm watercolor illustration in the style of a cherished memory, "
-    "soft golden lighting, gentle and nostalgic mood, painterly brushstrokes, "
-    "rich but muted colors. "
-)
-
-
-async def generate_moment_image(session_id: str, moment_id: str, visual_description: str) -> Optional[bytes]:
-    """Generate an illustration for a story moment using Imagen 3."""
+async def _generate_moment_image_imagen(
+    session_id: str, moment_id: str, visual_description: str
+) -> Optional[bytes]:
+    """Fallback: generate illustration using Imagen 3 via Vertex AI."""
     settings = get_settings()
 
     try:
@@ -127,12 +245,12 @@ async def generate_moment_image(session_id: str, moment_id: str, visual_descript
 
         if response.images:
             image_data = response.images[0]._image_bytes
-            gcs_url = await upload_image(session_id, moment_id, image_data)
+            await upload_image(session_id, moment_id, image_data)
             return image_data
         return None
 
     except Exception as e:
-        logger.error(f"Image generation failed for moment {moment_id}: {e}")
+        logger.error(f"Imagen 3 fallback failed for moment {moment_id}: {e}")
         return None
 
 
@@ -237,7 +355,7 @@ async def assemble_reel(session_id: str, elder_name: str,
             for seg in segment_files:
                 f.write(f"file '{seg}'\n")
 
-        # Concatenate all segments with crossfade
+        # Concatenate all segments
         output_path = os.path.join(tmpdir, "reel.mp4")
         concat_cmd = [
             "ffmpeg", "-y",
@@ -263,7 +381,11 @@ async def assemble_reel(session_id: str, elder_name: str,
 # ──────────────────────────── Pipeline Orchestration ────────────────────────────
 
 async def trigger_reel_pipeline(session_id: str, elder_id: str) -> None:
-    """Run the full reel generation pipeline for a completed session."""
+    """Run the full reel generation pipeline for a completed session.
+
+    Primary: Gemini interleaved text+image (single call for extraction + illustration).
+    Fallback: Gemini text extraction + Imagen 3 image generation (separate calls).
+    """
     try:
         # Get elder info
         elder = await firestore.get_elder(elder_id)
@@ -274,12 +396,7 @@ async def trigger_reel_pipeline(session_id: str, elder_id: str) -> None:
         # Create reel record
         reel = await firestore.create_reel(session_id, elder_id)
 
-        # Get session and transcript
-        session = await firestore.get_session(session_id)
-
-        # Get transcript from storage (for now, re-read from the session's processing)
-        # In production this would read from GCS
-        # For the pipeline, we pass transcript through the chain
+        # Get transcript from storage
         from app.services.storage import get_storage_client
         settings = get_settings()
 
@@ -296,48 +413,77 @@ async def trigger_reel_pipeline(session_id: str, elder_id: str) -> None:
             await firestore.update_reel(reel.id, status="failed")
             return
 
-        # Get vision context if available
-        conversation_session = None
         vision_context = []
+        used_interleaved = False
 
-        # Step 1: Extract story moments
-        logger.info(f"Reel pipeline: extracting moments for session {session_id}")
-        moments = await extract_story_moments(session_id, transcript, vision_context)
+        # ── Primary path: interleaved generation ──
+        try:
+            logger.info(f"Reel pipeline: attempting interleaved generation for session {session_id}")
+            moments = await generate_story_with_illustrations(
+                session_id, transcript, elder.name, vision_context
+            )
+            used_interleaved = True
+        except Exception as e:
+            logger.warning(f"Interleaved generation failed, falling back to Imagen 3: {e}")
+            moments = None
+
+        # ── Fallback path: separate extraction + Imagen 3 ──
+        if not moments:
+            logger.info(f"Reel pipeline: using fallback (text extraction + Imagen 3)")
+            moments = await _extract_story_moments_text_only(transcript, vision_context)
 
         if not moments:
             logger.warning(f"No moments extracted for session {session_id}")
             await firestore.update_reel(reel.id, status="failed")
             return
 
-        # Step 2: Generate images and narration in parallel
-        logger.info(f"Reel pipeline: generating {len(moments)} images and narrations")
+        # Save moments to Firestore
+        for i, moment in enumerate(moments):
+            moment["order"] = i
+            await firestore.create_moment(session_id, {
+                "title": moment.get("title", ""),
+                "summary": moment.get("summary", ""),
+                "quote": moment.get("quote", ""),
+                "visual_description": moment.get("visual_description", ""),
+                "emotional_tone": moment.get("emotional_tone", "nostalgic"),
+                "image_url": "",
+                "order": i,
+            })
 
         # Get moment IDs from Firestore
         saved_moments = await firestore.list_moments(session_id)
         moment_ids = [m.id for m in saved_moments]
 
-        # Generate images concurrently
-        image_tasks = [
-            generate_moment_image(session_id, mid, m["visual_description"])
-            for mid, m in zip(moment_ids, moments)
-        ]
+        # ── Image handling ──
+        if used_interleaved:
+            # Images already generated — extract bytes and upload to storage
+            images = []
+            for mid, m in zip(moment_ids, moments):
+                img_data = m.pop("image_data", None)
+                if img_data:
+                    await upload_image(session_id, mid, img_data)
+                images.append(img_data)
+        else:
+            # Fallback: generate images separately with Imagen 3
+            logger.info(f"Reel pipeline: generating {len(moments)} images via Imagen 3")
+            image_tasks = [
+                _generate_moment_image_imagen(session_id, mid, m.get("visual_description", ""))
+                for mid, m in zip(moment_ids, moments)
+            ]
+            images = list(await asyncio.gather(*image_tasks))
 
-        # Generate narrations concurrently
+        # ── Narration (always via TTS) ──
+        logger.info(f"Reel pipeline: generating {len(moments)} narrations")
         narration_tasks = [
-            generate_narration(session_id, mid, m["summary"])
+            generate_narration(session_id, mid, m.get("summary", ""))
             for mid, m in zip(moment_ids, moments)
         ]
+        narrations = list(await asyncio.gather(*narration_tasks))
 
-        # Run images and narrations in parallel
-        images, narrations = await asyncio.gather(
-            asyncio.gather(*image_tasks),
-            asyncio.gather(*narration_tasks),
-        )
-
-        # Step 3: Assemble video
+        # ── Video assembly ──
         logger.info(f"Reel pipeline: assembling video for session {session_id}")
         video_data = await assemble_reel(
-            session_id, elder.name, moments, list(images), list(narrations)
+            session_id, elder.name, moments, images, narrations
         )
 
         if video_data:
@@ -346,10 +492,11 @@ async def trigger_reel_pipeline(session_id: str, elder_id: str) -> None:
                 reel.id,
                 status="ready",
                 videoUrl=gcs_url,
-                duration=len(moments) * 10,  # approximate
+                duration=len(moments) * 10,
             )
             await firestore.update_session_status(session_id, status="complete")
-            logger.info(f"Reel pipeline complete: session={session_id}, reel={reel.id}")
+            method = "interleaved" if used_interleaved else "fallback (Imagen 3)"
+            logger.info(f"Reel pipeline complete: session={session_id}, reel={reel.id}, method={method}")
         else:
             await firestore.update_reel(reel.id, status="failed")
             await firestore.update_session_status(session_id, status="failed")

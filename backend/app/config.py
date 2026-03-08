@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-pro"
     gemini_live_model: str = "gemini-2.5-flash-exp"
+    gemini_image_model: str = "gemini-2.5-flash-preview-04-17"
 
     # Vertex AI
     vertex_ai_location: str = "us-central1"
